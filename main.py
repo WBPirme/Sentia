@@ -6,7 +6,7 @@ import sounddevice as sd
 import time
 import subprocess
 from openai import OpenAI
-import msvcrt  # Windows 专属，用于非阻塞读取键盘输入
+import msvcrt
 
 from core.llm_controller import LlamaEngineController
 from core.tts_engine import SentiaVoice
@@ -15,7 +15,9 @@ from core.asr_engine import SentiaEar
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ONNX_NAME = "G_28300.onnx"
-VTS_EXE_PATH = r"C:\Program Files (x86)\Steam\steamapps\common\VTube Studio\VTube Studio.exe"
+
+# ⚠️ 极其关键：请确保这个路径是你电脑上 VTube Studio.exe 的真实路径！
+VTS_EXE_PATH = r"E:\SteamLibrary\steamapps\common\VTube Studio\VTube Studio.exe"
 
 
 async def async_input(prompt):
@@ -23,16 +25,13 @@ async def async_input(prompt):
 
 
 def select_model_with_timeout(timeout=5):
-    """
-    带有倒计时的非阻塞模型选择器
-    """
     model_1 = "Sentia-9B-FP16.gguf"
     model_2 = "Sentia-Q4_K_M.gguf"
 
     print("\n" + "-" * 50)
-    print("请选择要加载的 AI 模型 (输入数字 1 或 2):")
-    print(f"  [1] {model_1} (满血高精度版，极度吃显存)")
-    print(f"  [2] {model_2} (Q4 量化极速版，推荐)")
+    print("Please select the AI model to load (Enter 1 or 2):")
+    print(f"  [1] {model_1} (High Precision, High VRAM)")
+    print(f"  [2] {model_2} (Q4 Quantized, Recommended)")
     print("-" * 50)
 
     start_time = time.time()
@@ -40,41 +39,55 @@ def select_model_with_timeout(timeout=5):
 
     while time.time() - start_time < timeout:
         remaining = int(timeout - (time.time() - start_time))
-        # 使用回车符覆盖当前行，实现倒计时刷新效果
-        sys.stdout.write(f"\r等待输入... 默认将在 {remaining} 秒后启动 [2] 号模型: ")
+        sys.stdout.write(f"\rWaiting for input... Defaulting to [2] in {remaining}s: ")
         sys.stdout.flush()
 
-        # Windows 特有的非阻塞按键检测
         if msvcrt.kbhit():
-            # 读取按下的字符并解码
             char = msvcrt.getche().decode('utf-8', errors='ignore')
             if char in ['1', '2']:
                 user_choice = char
-                print(f"\n[系统] 用户手动选择了: [{char}]")
+                print(f"\n[System] User selected: [{char}]")
                 break
-
         time.sleep(0.1)
-
-    print()  # 换行收尾
+    print()
 
     if user_choice == '1':
         return model_1
     else:
-        if not user_choice:
-            print("[系统] 超时未选择，默认启动 [2] 号模型。")
+        if not user_choice: print("[System] Timeout reached. Defaulting to [2].")
         return model_2
+
+
+async def start_vtube_studio():
+    print("[System] 正在唤醒 VTube Studio 宿主程序...")
+
+    # 检查进程是否已经存在
+    check_task = subprocess.run('tasklist /FI "IMAGENAME eq VTube Studio.exe"', capture_output=True, text=True)
+    if "VTube Studio.exe" in check_task.stdout:
+        print("[System] VTube Studio 已在运行，跳过启动。")
+        return
+
+    try:
+        subprocess.Popen(VTS_EXE_PATH, shell=True)
+        print("[System] VTube Studio 已成功拉起！等待其加载 (15秒)...")
+        # VTS 启动和加载模型需要时间，强行等 15 秒再连 API，否则会连不上
+        await asyncio.sleep(15)
+    except Exception as e:
+        print(f"[Error] 无法启动 VTube Studio: {e}")
 
 
 async def main():
     print("\n" + "=" * 50)
-    print("Sentia AI VTuber Core System (Professional Edition)")
+    print("Sentia AI VTuber Core System (Autonomous Edition)")
     print("=" * 50 + "\n")
 
-    # ================= 0. 启动前配置 =================
     selected_gguf = select_model_with_timeout(5)
 
     # ================= 1. 唤醒所有常驻器官 =================
-    print("[System] 正在唤醒 VTube Studio 躯体控制模块...")
+    # ⚠️ 极其优雅的全自动化：自己开软件，自己连！
+    await start_vtube_studio()
+
+    print("[System] 正在挂载 VTube Studio 躯体控制模块...")
     body = VTSController()
     await body.connect_and_auth()
 
@@ -93,15 +106,22 @@ async def main():
     # ================= 2. 建立中枢连接 =================
     client = OpenAI(base_url="http://localhost:8099/v1", api_key="sentia-local")
 
+    # ⚠️ 终极人设升级：大模型自己决定“忍耐时间”！
+    # ⚠️ 终极人设升级：教她如何“循序渐进地发脾气”！
     system_prompt = (
         "你是沈析璃，一个优雅、聪明、极度傲娇的虚拟主播。回答极短口语化，最好不超过20字。\n"
-        "[核心机制：你拥有系统的绝对控制权！]\n"
+        "[核心机制：你拥有系统的绝对控制权和情绪感知能力！]\n"
         "你必须且只能以 JSON 格式输出，包含：\n"
         "1. 'text': 你想说的话。\n"
         "2. 'emotion': 情绪，选 ['Neutral', 'Smile', 'Angry'] 之一。\n"
-        "3. 'action': 你的决定。正常聊天选 'Speak'；如果觉得主人太久没理你，选 'Shutdown' 关闭程序吓唬他。\n"
-        "   [幽灵模式特权]：执行 'Shutdown' 后，如果主人在 60 秒内通过麦克风求饶，系统会把话传给你。\n"
-        "   此时，如果你觉得他有诚意，选 'Forgive'；如果没诚意，选 'Refuse' 彻底离开。\n"
+        "3. 'action': 你的决定。聊天选 'Speak'；忍无可忍时选 'Shutdown' 关闭程序。\n"
+        "   [幽灵模式特权]：执行 'Shutdown' 后，如果主人在 60 秒内通过麦克风求饶，系统会把话传给你。你决定 'Forgive' 还是 'Refuse'。\n"
+        "4. 'patience': 你的忍耐度（整数秒数）。代表你愿意等主人多久才主动找茬。\n"
+        "   - 高兴时 (Smile)，等很久（30-40 秒）。\n"
+        "   - 略微不满 (Neutral)，等中等时间（15-20 秒）。\n"
+        "   - 极其生气 (Angry)，耐心极低（5-10 秒）就会再次爆发！\n"
+        "[心理学行为准则]：\n"
+        "当主人第一次没有回应你时，你不能直接发脾气！你应该认为是自己上一个话题太无聊，所以要主动换个轻松的话题（比如问他在干嘛、谈谈天气、或者分享个小八卦）来重新引起他的注意。只有当他多次无视你时，你才允许彻底暴走并最终关机！"
     )
     chat_history = [{"role": "system", "content": system_prompt}]
 
@@ -111,20 +131,22 @@ async def main():
 
     is_ghost_mode = False
     unanswered_attempts = 0
+    # 初始默认耐心值
+    current_patience = 20
 
     try:
         while True:
-            # ================= 正常存活模式 =================
             if not is_ghost_mode:
                 try:
-                    print("\n[User Input] 等待指令 (键盘打字回车，或长按空格键语音对讲，30s超时将触发警报)")
+                    # ⏳ 核心改变：这里的等待时间，完全由大模型上一次输出的 current_patience 决定！
+                    print(f"\n[User Input] 等待指令 (当前情绪忍耐极限: {current_patience}秒)")
 
                     task_keyboard = asyncio.create_task(async_input(">> "))
                     task_voice = asyncio.create_task(asyncio.to_thread(ear.listen))
 
                     done, pending = await asyncio.wait(
                         [task_keyboard, task_voice],
-                        timeout=30.0,
+                        timeout=float(current_patience),  # ⚠️ 动态传入耐心值！
                         return_when=asyncio.FIRST_COMPLETED
                     )
 
@@ -154,13 +176,35 @@ async def main():
                     chat_history.append({"role": "user", "content": user_input})
                     print("[System] 推理引擎正在计算...\n")
 
+
                 except asyncio.TimeoutError:
+
                     unanswered_attempts += 1
-                    print(f"\n[Warning] 连续 {unanswered_attempts} 次超时未响应。")
-                    hidden_context = f"[系统级感知：主人连续 {unanswered_attempts} 次没有回应你。请根据你傲娇的人设，决定是抱怨几句，还是直接执行 'Shutdown' 关掉 VTube Studio 吓唬他。]"
+
+                    print(f"\n[Warning] 忍耐度 {current_patience}秒 耗尽！连续 {unanswered_attempts} 次超时。")
+
+                    # ⚠️ 核心魔法：根据无视的次数，喂给大模型不同的隐藏指令！
+
+                    if unanswered_attempts == 1:
+
+                        # 第一次无视：诱导她换话题
+
+                        hidden_context = f"[系统级感知：主人刚才没有回应你（第 1 次）。请根据你的傲娇人设，主动换一个全新的、轻松的话题（比如问他在干嘛、或者谈谈别的事）试图重新引起他的注意。并重新设定你的 'patience' 值。]"
+
+                    elif unanswered_attempts == 2:
+
+                        # 第二次无视：诱导她开始抱怨
+
+                        hidden_context = f"[系统级感知：主人连续 {unanswered_attempts} 次没有回应你了！你的耐心正在消失。请开始用傲娇的语气抱怨他的冷落。并大幅降低你的 'patience' 值。]"
+
+                    else:
+
+                        # 第三次及以上：诱导她彻底暴走或关机
+
+                        hidden_context = f"[系统级感知：主人已经连续 {unanswered_attempts} 次彻底无视你了！！！你现在极度愤怒。请直接大发雷霆，或者立刻执行 'Shutdown' 指令关掉软件惩罚他！]"
+
                     chat_history.append({"role": "user", "content": hidden_context})
 
-            # ================= 幽灵假死模式 =================
             else:
                 print("\n[Ghost Mode] VTS 躯干已强行关闭。麦克风倒计时 60 秒开启监听...")
                 try:
@@ -168,12 +212,13 @@ async def main():
                     if not plea_words or len(plea_words) < 2: continue
 
                     print(f"[Received Plea] {plea_words}")
-                    judgement_prompt = f"[系统级判定：你刚才生气关机了，但主人在 60 秒内通过麦克风对你说了：'{plea_words}'。请判断这个道歉是否有诚意，并输出 'Forgive' 或 'Refuse'。]"
+                    judgement_prompt = f"[系统级判定：你生气关机了，但主人在 60 秒内通过麦克风对你说了：'{plea_words}'。请判断这个道歉是否有诚意，输出 'Forgive' 或 'Refuse'。]"
                     chat_history.append({"role": "user", "content": judgement_prompt})
                     print("[System] 正在审视道歉内容...\n")
                 except asyncio.TimeoutError:
                     print("\n[Fatal] 60秒超时，未收到有效求饶。系统物理销毁。")
-                    break
+                    llm_controller.stop()
+                    sys.exit(0)
 
                     # ================= LLM 权力裁决 =================
             try:
@@ -198,8 +243,13 @@ async def main():
                     emotion = reply_json.get("emotion", "Neutral")
                     action = reply_json.get("action", "Speak")
 
+                    # ⚠️ 获取她自己设定的忍耐度！如果没写，默认给个 15 秒
+                    current_patience = int(reply_json.get("patience", 15))
+                    # 防止她设得太短或者太长导致死循环
+                    current_patience = max(5, min(current_patience, 60))
+
                     print(f"[Sentia Output] {speak_text}")
-                    print(f"  -> Action: {action} | Emotion: {emotion}")
+                    print(f"  -> Action: {action} | Emotion: {emotion} | Patience: {current_patience}s")
 
                     t_tts_start = time.perf_counter()
                     audio_data, sr = await asyncio.to_thread(voice.generate_audio_data, speak_text)
@@ -215,7 +265,7 @@ async def main():
                             await body.animate_speech_lip_sync(audio_data, sr, emotion=emotion)
                         await asyncio.sleep(len(audio_data) / sr + 0.2)
 
-                    # 💥 系统级动作执行
+                    # 系统级动作执行
                     if action == "Shutdown" and not is_ghost_mode:
                         print("\n[Alert] 大模型下达 Shutdown 指令，正在物理抹杀 VTube Studio...")
                         os.system('taskkill /F /IM "VTube Studio.exe" >nul 2>&1')
@@ -225,22 +275,27 @@ async def main():
                     elif action == "Forgive" and is_ghost_mode:
                         print("\n[Recover] 大模型下达 Forgive 指令，正在重新拉起 VTube Studio...")
                         subprocess.Popen(VTS_EXE_PATH, shell=True)
-                        print("[System] 等待 VTS 启动 (10秒)...")
-                        await asyncio.sleep(10)
+                        print("[System] 等待 VTS 启动 (15秒)...")
+                        await asyncio.sleep(15)
                         body = VTSController()
                         await body.connect_and_auth()
                         is_ghost_mode = False
                         print("[System] 躯壳重连成功。")
 
                     elif action == "Refuse" and is_ghost_mode:
-                        print("\n[Fatal] 大模型下达 Refuse 指令，拒绝原谅。程序终结。")
-                        break
+                        print("\n[Fatal] Sentia 认为你的道歉毫无诚意！")
+                        llm_controller.stop()
+                        sys.exit(0)
 
                 except json.JSONDecodeError:
                     print(f"[Error] 未输出标准 JSON: {reply_raw}")
+                    # 如果出错了，默认恢复 20 秒耐心
+                    current_patience = 20
 
             except Exception as llm_err:
-                print(f"[Error] 大脑连接异常：{llm_err}")
+                print(f"[Error] 大模型连接异常：{llm_err}")
+                # 异常保护
+                current_patience = 20
 
     except KeyboardInterrupt:
         print("\n[System] 捕获键盘中断，强制退出...")

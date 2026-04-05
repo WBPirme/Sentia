@@ -39,7 +39,6 @@ class VTSController:
         self.blink_timer = time.perf_counter()
         self.is_blinking = False
 
-        # 宇宙大爆炸随机相位，打破波形初始偏好
         self.phase_x = random.uniform(0, math.pi * 2)
         self.phase_y = random.uniform(0, math.pi * 2)
         self.phase_z = random.uniform(0, math.pi * 2)
@@ -228,10 +227,8 @@ class VTSController:
 
                 #打包发送
                 inject_data = {
-                    "apiName": "VTubeStudioPublicAPI",
-                    "apiVersion": "1.0",
-                    "requestID": "InjectParams",
-                    "messageType": "InjectParameterDataRequest",
+                    "apiName": "VTubeStudioPublicAPI", "apiVersion": "1.0",
+                    "requestID": "InjectParams", "messageType": "InjectParameterDataRequest",
                     "data": {
                         "faceFound": True,
                         "parameterValues": [
@@ -240,45 +237,25 @@ class VTSController:
                             {"id": "Sentia_AngleZ", "value": self.cur_head_z},
                             {"id": "Sentia_BodyX", "value": self.cur_body_x},
                             {"id": "Sentia_BodyY", "value": self.cur_body_y},
-                            {"id": "Sentia_BodyZ", "value": self.cur_body_z},
                             {"id": "Sentia_EyeX", "value": self.cur_eye_x},
                             {"id": "Sentia_EyeY", "value": self.cur_eye_y},
                             {"id": "Sentia_EyeLOpen", "value": eye_open},
                             {"id": "Sentia_EyeROpen", "value": eye_open},
-                            {"id": "Sentia_BrowLY", "value": self.cur_brow_y},
-                            {"id": "Sentia_BrowRY", "value": self.cur_brow_y},
-                            {"id": "Sentia_BrowLForm", "value": self.cur_brow_y},
-                            {"id": "Sentia_BrowRForm", "value": self.cur_brow_y},
                             {"id": "Sentia_MouthOpenY", "value": self.cur_mouth_open},
                             {"id": "Sentia_MouthForm", "value": self.cur_mouth_form}
                         ]
                     }
                 }
-
                 if self.vts.websocket:
                     await self.vts.websocket.send(json.dumps(inject_data))
 
                 elapsed = time.perf_counter() - loop_start
-                sleep_time = max(0.001, frame_time - elapsed)
-                await asyncio.sleep(sleep_time)
+                await asyncio.sleep(max(0.001, frame_time - elapsed))
 
             except Exception as e:
-                print(f"模拟: {e}")
                 await asyncio.sleep(1)
 
     async def close(self):
         self.is_alive = False
         if self._idle_task: self._idle_task.cancel()
-        if self._reader_task: self._reader_task.cancel()
         await self.vts.close()
-
-
-if __name__ == "__main__":
-    async def test_full_body():
-        vts_body = VTSController()
-        await vts_body.connect_and_auth()
-        await asyncio.sleep(600)
-        await vts_body.close()
-
-
-    asyncio.run(test_full_body())
