@@ -24,3 +24,5 @@ engine/
 *.psd
 *.wav
 *.mp4
+/steam_appid.txt
+/vts_token.txt

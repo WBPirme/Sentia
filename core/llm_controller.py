@@ -1,10 +1,9 @@
 ﻿import os
-import time
 import subprocess
 import socket
 import platform
-import urllib.request
-import urllib.error
+import asyncio
+import aiohttp  # ⚠️ 终极解法：使用纯异步的 HTTP 库代替阻塞的 urllib！
 
 
 class LlamaEngineController:
@@ -30,24 +29,28 @@ class LlamaEngineController:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(('localhost', self.port)) == 0
 
-    def wait_for_server_ready(self, timeout=60):
-        print(f" 正在等待模型载入显存 (端口 {self.port})...")
-        start_time = time.time()
+    async def wait_for_server_ready(self, timeout=60):
+        print(f"⏳ 正在等待大模型载入显存 (端口 {self.port})...")
+        start_time = asyncio.get_event_loop().time()
         url = f"http://localhost:{self.port}/health"
-        while time.time() - start_time < timeout:
-            try:
-                if urllib.request.urlopen(url, timeout=1).getcode() == 200:
-                    print(f" 模型已就绪！(耗时: {time.time() - start_time:.1f}秒)")
-                    return True
-            except:
-                time.sleep(0.5)
-        print(" 警告：模型启动超时！")
+
+        async with aiohttp.ClientSession() as session:
+            while asyncio.get_event_loop().time() - start_time < timeout:
+                try:
+                    async with session.get(url, timeout=1) as response:
+                        if response.status == 200:
+                            print(
+                                f"\n 大模型已就绪！(耗时: {asyncio.get_event_loop().time() - start_time:.1f}秒)\n")
+                            return True
+                except:
+                    await asyncio.sleep(0.5)
+
+        print("\n 警告：大模型启动超时！")
         return False
 
-    def start(self):
+    def start_process_only(self):
         if self.is_port_in_use():
-            print(f" 模型已在运行。")
-            self.wait_for_server_ready()
+            print(f" 大模型已在运行。")
             return
 
         engine_folder = self._sniff_hardware()
@@ -70,7 +73,6 @@ class LlamaEngineController:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW
         )
-        self.wait_for_server_ready()
 
     def stop(self):
         if self.process:
