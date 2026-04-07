@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sherpa_onnx
 import numpy as np
 

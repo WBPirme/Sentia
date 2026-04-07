@@ -25,6 +25,7 @@ class SentiaEar:
                 rule3_min_utterance_length=30.0,
                 provider="cpu"
             )
+            print(" ASR 加载成功！")
         except Exception as e:
             print(f" ASR 加载失败！请检查 models 目录。\n报错: {e}")
             self.recognizer = None
@@ -35,22 +36,34 @@ class SentiaEar:
     def _audio_callback(self, indata, frames, time_info, status):
         self.audio_queue.put(indata[:, 0].copy())
 
-    def listen(self):
+    def _clear_audio_queue(self):
+        while True:
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def listen(self, stop_event=None):
         if not self.recognizer:
             return ""
 
-        # 优雅轮询：每 0.1 秒检查一次空格键，防死锁
+        # 优雅轮询：每 0.05 秒检查一次空格键或停止信号，避免堆积后台线程
         while True:
+            if stop_event is not None and stop_event.is_set():
+                return ""
             if keyboard.is_pressed('space'):
                 break
-            time.sleep(0.1)
+            time.sleep(0.05)
 
+        self._clear_audio_queue()
         print("\n [录音中... 请保持按住空格，松开发送]")
         stream = self.recognizer.create_stream()
         last_text = ""
 
         with sd.InputStream(channels=1, dtype="float32", samplerate=self.sample_rate, callback=self._audio_callback):
             while keyboard.is_pressed('space'):
+                if stop_event is not None and stop_event.is_set():
+                    break
                 try:
                     chunk = self.audio_queue.get_nowait()
                     stream.accept_waveform(self.sample_rate, chunk)
@@ -63,6 +76,9 @@ class SentiaEar:
                         last_text = current_text
                 except queue.Empty:
                     time.sleep(0.001)
+
+        if stop_event is not None and stop_event.is_set():
+            return ""
 
         print("\n [松开按键，录音结束]")
         stream.input_finished()

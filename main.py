@@ -7,6 +7,7 @@ import time
 import subprocess
 from openai import OpenAI
 import msvcrt
+import threading
 
 from core.llm_controller import LlamaEngineController
 from core.tts_engine import SentiaVoice
@@ -16,12 +17,135 @@ from core.memory_engine import SentiaMemory
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ONNX_NAME = "G_28300.onnx"
+CHAT_SUMMARY_PREFIX = "[对话摘要]"
+MAX_RECENT_CHAT_MESSAGES = 12
+MAX_SUMMARY_MESSAGES = 6
+MAX_SUMMARY_CHARS = 120
 # 请确保此路径为电脑上 VTube Studio 的真实安装路径
 VTS_EXE_PATH = r"E:\SteamLibrary\steamapps\common\VTube Studio\VTube Studio.exe"
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
-async def async_input(prompt):
-    return await asyncio.to_thread(input, prompt)
+
+async def async_input(prompt, stop_event=None):
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    chars = []
+
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            if chars:
+                print()
+            return ""
+
+        if msvcrt.kbhit():
+            char = msvcrt.getwch()
+
+            if char == "\003":
+                raise KeyboardInterrupt
+
+            if char in ("\r", "\n"):
+                print()
+                return "".join(chars).strip()
+
+            if char == "\b":
+                if chars:
+                    chars.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+                continue
+
+            if char in ("\x00", "\xe0"):
+                if msvcrt.kbhit():
+                    msvcrt.getwch()
+                continue
+
+            chars.append(char)
+            sys.stdout.write(char)
+            sys.stdout.flush()
+
+        await asyncio.sleep(0.05)
+
+
+def _compact_message(message):
+    content = " ".join(message["content"].split())
+    if len(content) > MAX_SUMMARY_CHARS:
+        content = content[:MAX_SUMMARY_CHARS - 3] + "..."
+    return f"{message['role']}: {content}"
+
+
+def trim_chat_history(chat_history):
+    if len(chat_history) <= MAX_RECENT_CHAT_MESSAGES + 1:
+        return
+
+    system_message = chat_history[0]
+    filtered_history = []
+    has_earlier_summary = False
+
+    for message in chat_history[1:]:
+        if message["role"] == "system" and message["content"].startswith(CHAT_SUMMARY_PREFIX):
+            has_earlier_summary = True
+            continue
+        filtered_history.append(message)
+
+    if len(filtered_history) <= MAX_RECENT_CHAT_MESSAGES:
+        if has_earlier_summary:
+            chat_history[:] = [
+                system_message,
+                {"role": "system", "content": f"{CHAT_SUMMARY_PREFIX}\n- 更早的对话已被压缩为摘要。"},
+                *filtered_history,
+            ]
+        else:
+            chat_history[:] = [system_message, *filtered_history]
+        return
+
+    overflow = filtered_history[:-MAX_RECENT_CHAT_MESSAGES]
+    recent = filtered_history[-MAX_RECENT_CHAT_MESSAGES:]
+
+    summary_lines = []
+    if has_earlier_summary:
+        summary_lines.append("- 更早的对话已被压缩为摘要。")
+    summary_lines.extend(
+        f"- {_compact_message(message)}"
+        for message in overflow[-MAX_SUMMARY_MESSAGES:]
+    )
+
+    summary_message = {
+        "role": "system",
+        "content": f"{CHAT_SUMMARY_PREFIX}\n" + "\n".join(summary_lines),
+    }
+    chat_history[:] = [system_message, summary_message, *recent]
+
+
+def append_chat_message(chat_history, role, content):
+    chat_history.append({"role": role, "content": content})
+    trim_chat_history(chat_history)
+
+
+async def stop_pending_input_tasks(stop_event, *tasks):
+    stop_event.set()
+    for task in tasks:
+        if task is None:
+            continue
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+        except asyncio.TimeoutError:
+            task.cancel()
+        except Exception:
+            pass
+
+
+async def listen_with_timeout(ear, timeout):
+    stop_event = threading.Event()
+    task_voice = asyncio.create_task(asyncio.to_thread(ear.listen, stop_event))
+    try:
+        return await asyncio.wait_for(asyncio.shield(task_voice), timeout=timeout)
+    except asyncio.TimeoutError:
+        await stop_pending_input_tasks(stop_event, task_voice)
+        raise
 
 
 def select_model_with_timeout(timeout=5):
@@ -54,7 +178,8 @@ def select_model_with_timeout(timeout=5):
     if user_choice == '1':
         return model_1
     else:
-        if not user_choice: print("[System] 倒计时结束。自动加载 [2] 号模型。")
+        if not user_choice:
+            print("[System] 倒计时结束。自动加载 [2] 号模型。")
         return model_2
 
 
@@ -74,7 +199,6 @@ async def start_vtube_studio():
 
 
 async def main():
-
     selected_gguf = select_model_with_timeout(5)
 
     # 1. 自动启动躯壳
@@ -87,13 +211,15 @@ async def main():
 
     print("[System] 正在初始化 Sherpa-ONNX 语音合成引擎...")
     voice = SentiaVoice(BASE_DIR, model_name=ONNX_NAME)
-    if voice.tts is None: return
+    if voice.tts is None:
+        return
 
     print("[System] 正在初始化流式语音识别模块...")
     ear = SentiaEar(BASE_DIR)
-    if ear.recognizer is None: return
+    if ear.recognizer is None:
+        return
 
-    # 初始化海马体（持久化记忆）
+    # 持久化记忆
     memory = SentiaMemory(BASE_DIR)
 
     print(f"[System] 正在后台异步分配显存并唤醒大模型 ({selected_gguf})...")
@@ -137,8 +263,9 @@ async def main():
                     print(f"\n[Input] 等待输入... (当前忍耐极限: {current_patience} 秒)")
                     print("   提示: 可直接键盘打字回车，或按住[空格键]使用麦克风对讲。")
 
-                    task_keyboard = asyncio.create_task(async_input(">> "))
-                    task_voice = asyncio.create_task(asyncio.to_thread(ear.listen))
+                    stop_event = threading.Event()
+                    task_keyboard = asyncio.create_task(async_input(">> ", stop_event))
+                    task_voice = asyncio.create_task(asyncio.to_thread(ear.listen, stop_event))
 
                     done, pending = await asyncio.wait(
                         [task_keyboard, task_voice],
@@ -147,12 +274,12 @@ async def main():
                     )
 
                     if not done:
-                        for task in pending: task.cancel()
+                        await stop_pending_input_tasks(stop_event, task_keyboard, task_voice)
                         raise asyncio.TimeoutError()
 
                     winner_task = done.pop()
                     user_input = winner_task.result()
-                    for task in pending: task.cancel()
+                    await stop_pending_input_tasks(stop_event, *pending)
 
                     if not user_input or len(user_input.strip()) < 1:
                         continue
@@ -177,10 +304,10 @@ async def main():
 
                     combined_input = user_input
                     if recalled_info:
-                        print(f"[Memory] 发现相关的历史对话片段。")
+                        print("[Memory] 发现相关的历史对话片段。")
                         combined_input = f"{recalled_info}\n\n[当前对话]: {user_input}"
 
-                    chat_history.append({"role": "user", "content": combined_input})
+                    append_chat_message(chat_history, "user", combined_input)
                     memory.write_memory(f"对我说: {user_input}", importance=1)
 
                 except asyncio.TimeoutError:
@@ -188,45 +315,49 @@ async def main():
                     print(f"\n[警告] {current_patience}秒 忍耐倒计时耗尽。已累计无视次数: {unanswered_attempts}")
 
                     if unanswered_attempts == 1:
-                        hidden_context = f"[系统级感知：并未回应 (第1次)。请根据人设，主动抛出一个轻松的新话题尝试引起他注意。并重设 patience 值。]"
+                        hidden_context = "[系统级感知：并未回应 (第1次)。请根据人设，主动抛出一个轻松的新话题尝试引起他注意。并重设 patience 值。]"
                     elif unanswered_attempts == 2:
-                        hidden_context = f"[系统级感知：再次无视了你 (第2次)。你的耐心正在消失，请开始用傲娇的语气抱怨冷落。并大幅降低 patience 值。]"
+                        hidden_context = "[系统级感知：再次无视了你 (第2次)。你的耐心正在消失，请开始用傲娇的语气抱怨冷落。并大幅降低 patience 值。]"
                     else:
                         hidden_context = f"[系统级感知：连续 {unanswered_attempts} 次彻底无视了你。你现在极度愤怒。请大发雷霆，或直接下达 'Shutdown' 指令关闭程序！]"
 
-                    chat_history.append({"role": "user", "content": hidden_context})
+                    append_chat_message(chat_history, "user", hidden_context)
 
             else:
                 print("\n倒计时 60 秒等待...")
                 try:
-                    plea_words = await asyncio.wait_for(asyncio.to_thread(ear.listen), timeout=60.0)
-                    if not plea_words or len(plea_words) < 2: continue
+                    plea_words = await listen_with_timeout(ear, 60.0)
+                    if not plea_words or len(plea_words) < 2:
+                        continue
 
                     print(f"[Received] {plea_words}")
                     judgement_prompt = f"[系统级判定：你刚才生气关机了，但在 60 秒内通过麦克风对你说了这句话：'{plea_words}'。请判断这个道歉是否有诚意，并输出 'Forgive' 或 'Refuse'。]"
-                    chat_history.append({"role": "user", "content": judgement_prompt})
+                    append_chat_message(chat_history, "user", judgement_prompt)
                     print("[System] 大模型正在审视道歉内容...\n")
                 except asyncio.TimeoutError:
                     print("\n[Fatal] 60秒超时，未收到有效的道歉。系统即将关闭。")
                     break
 
-                    # ================= LLM 推理与动作执行 =================
             try:
                 t_llm_start = time.perf_counter()
                 response = await asyncio.to_thread(
                     client.chat.completions.create,
-                    model="Sentia", messages=chat_history, temperature=1.2, max_tokens=3000,
+                    model="Sentia",
+                    messages=chat_history,
+                    temperature=1.2,
+                    max_tokens=3000,
                     response_format={"type": "json_object"}
                 )
                 t_llm_end = time.perf_counter()
 
                 reply_raw = response.choices[0].message.content
-                chat_history.append({"role": "assistant", "content": reply_raw})
+                append_chat_message(chat_history, "assistant", reply_raw)
 
                 try:
                     cleaned_raw = reply_raw.replace("，", ",").replace("“", '"').replace("”", '"')
                     start_idx, end_idx = cleaned_raw.find("{"), cleaned_raw.rfind("}") + 1
-                    if start_idx != -1 and end_idx != 0: cleaned_raw = cleaned_raw[start_idx:end_idx]
+                    if start_idx != -1 and end_idx != 0:
+                        cleaned_raw = cleaned_raw[start_idx:end_idx]
 
                     reply_json = json.loads(cleaned_raw)
                     speak_text = reply_json.get("text", "Error parsing thought")
@@ -246,7 +377,8 @@ async def main():
                     if audio_data is not None:
                         audio_duration = (len(audio_data) / sr) * 1000
                         print(
-                            f"  -> 性能简报: 思考耗时 {(t_llm_end - t_llm_start) * 1000:.1f}ms | 语音合成 {(t_tts_end - t_tts_start) * 1000:.1f}ms | 音频全长 {audio_duration:.1f}ms")
+                            f"  -> 性能简报: 思考耗时 {(t_llm_end - t_llm_start) * 1000:.1f}ms | 语音合成 {(t_tts_end - t_tts_start) * 1000:.1f}ms | 音频全长 {audio_duration:.1f}ms"
+                        )
 
                         sd.play(audio_data, samplerate=sr)
                         if not is_ghost_mode:
@@ -256,16 +388,14 @@ async def main():
                     # ================= 动作裁决 =================
                     if action == "Shutdown" and not is_ghost_mode:
                         print("\n[Alert] 接收到 Shutdown 关机指令，正在关闭 VTube Studio 进程...")
-                        memory.write_memory("极度冷漠，我极其愤怒，直接强行关机。",
-                                            emotion_tag="Angry", importance=5)
+                        memory.write_memory("极度冷漠，我极其愤怒，直接强行关机。", emotion_tag="Angry", importance=5)
                         os.system('taskkill /F /IM "VTube Studio.exe" >nul 2>&1')
                         await body.close()
                         is_ghost_mode = True
 
                     elif action == "Forgive" and is_ghost_mode:
                         print("\n[Recover] 接收到 Forgive 原谅指令，正在重新拉起 VTube Studio...")
-                        memory.write_memory("向我诚恳地道了歉，我原谅了他，并重新启动。", emotion_tag="Smile",
-                                            importance=4)
+                        memory.write_memory("向我诚恳地道了歉，我原谅了他，并重新启动。", emotion_tag="Smile", importance=4)
                         subprocess.Popen(VTS_EXE_PATH, shell=True)
                         print("[System] 等待 VTS 启动 ...")
                         await asyncio.sleep(15)
@@ -276,8 +406,7 @@ async def main():
 
                     elif action == "Refuse" and is_ghost_mode:
                         print("\n[Fatal] 大模型判定道歉无效。拒绝原谅，终止程序。")
-                        memory.write_memory("道歉毫无诚意，我彻底拒绝并永远地离开了。", emotion_tag="Angry",
-                                            importance=5)
+                        memory.write_memory("道歉毫无诚意，我彻底拒绝并永远地离开了。", emotion_tag="Angry", importance=5)
                         break
 
                 except json.JSONDecodeError:
