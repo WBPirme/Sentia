@@ -6,6 +6,6 @@
 3. 模型准备：在根目录新建 `models` 文件夹。
    - LLM 模型：[下载 Sentia-Q4_K_M.gguf或Sentia-9B-FP16.gguf (https://huggingface.co/BucketP/Sentia-Qwen3.5-9B-GGUF) ]，放入` models `目录。
    - TTS模型，ASR模型和记忆数据库：[下载 G_28300.onnx ， tokens.txt ，asr.rar ，memory_db,rar ，memory_embedding.rar (https://github.com/WBPirme/Sentia/releases/tag/v1.0.0) ]，放入` models `目录，rar 压缩包需解压放入。、
-   - VTuber模型(可选): [下载 sxl.rar (https://github.com/WBPirme/Sentia/releases/tag/VTuber_model) ]，具体使用方法查看VTuber Studio文档这里不做说明
+   - VTuber模型(可选): [下载 sxl.rar (https://github.com/WBPirme/Sentia/releases/tag/VTuber_model) ]，具体使用方法查看VTuber Studio文档这里不作说明
 4. 启动 steam 下载 Vtuber Studio,下载完成后浏览本地文件并复制 `VTube Studio.exe` 所在文件夹路径，例如`E:\SteamLibrary\steamapps\common\VTube Studio`，打开`main.py`替换`VTS_EXE_PATH`后引号中的内容
 5. 运行 `main.py` 启动系统。
