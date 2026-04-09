@@ -65,10 +65,10 @@ engine/
 | 模型类型 | 推荐下载链接/来源 | 目标存放路径 |
 | :--- | :--- | :--- |
 | **LLM (GGUF)** | [Sentia-Qwen3.5-9B](https://huggingface.co/BucketP/Sentia-Qwen3.5-9B-GGUF) | `models/Sentia-Q4_K_M.gguf` 或 `Sentia-9B-FP16.gguf` |
-| **TTS (语音合成)** | [GitHub Releases](https://github.com/WBPirme/Sentia/releases/tag/v1.0.0) | `models/G_28300.onnx` 及 `tokens.txt` |
-| **ASR (语音识别)** | [GitHub Releases](https://github.com/WBPirme/Sentia/releases/tag/v1.0.0) | `models/asr/` (解压至此) |
-| **记忆数据库** | [GitHub Releases](https://github.com/WBPirme/Sentia/releases/tag/v1.0.0) | `models/memory_db/` (初始库，解压至此) |
-| **Embedding 模型** | [bge-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5) | `models/memory_embedding/` (包含 config, model 等文件) |
+| **TTS (语音合成)** | [GitHub Releases](https://github.com/WBPirme/Sentia_VTuber_Agent/releases/tag/v1.0.0) | `models/G_28300.onnx` 及 `tokens.txt` |
+| **ASR (语音识别)** | [GitHub Releases](https://github.com/WBPirme/Sentia_VTuber_Agent/releases/tag/v1.0.0) | `models/asr/` (解压至此) |
+| **记忆数据库** | [GitHub Releases](https://github.com/WBPirme/Sentia_VTuber_Agent/releases/tag/v1.0.0) | `models/memory_db/` (初始库，解压至此) |
+| **Embedding 模型** | [bge-small-zh-v1.5](https://huggingface.co/BAAI/bge-small-zh-v1.5) / [GitHub Releases](https://github.com/WBPirme/Sentia_VTuber_Agent/releases/tag/v1.0.0) | `models/memory_embedding/` (包含 config, model 等文件) |
 
 *(注：如果你希望使用作者提供的 Live2D 模型，可在 Releases 中下载 `VTuber_model` 并导入 VTube Studio)*
 
