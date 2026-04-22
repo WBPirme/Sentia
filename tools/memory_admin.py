@@ -5,6 +5,11 @@ import sys
 from datetime import datetime
 from uuid import uuid4
 
+# 预设环境变量，防止导入时触发网络检查或遥测
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
 import chromadb
 from chromadb.utils import embedding_functions
 
@@ -18,9 +23,6 @@ COLLECTION_NAME = "sentia_long_term_memory_local_v1"
 def build_collection():
     os.makedirs(DB_PATH, exist_ok=True)
     os.environ.setdefault("HF_HOME", os.path.join(DB_PATH, "hf_home"))
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
     client = chromadb.PersistentClient(path=DB_PATH)
     embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(

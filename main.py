@@ -1,5 +1,6 @@
 import os
 import json
+import ast
 import asyncio
 import sys
 import re
@@ -22,6 +23,57 @@ CHAT_SUMMARY_PREFIX = "[对话摘要]"
 MAX_RECENT_CHAT_MESSAGES = 12
 MAX_SUMMARY_MESSAGES = 6
 MAX_SUMMARY_CHARS = 120
+DEFAULT_PATIENCE_BY_EMOTION = {
+    "Smile": 35,
+    "Neutral": 18,
+    "Angry": 8,
+}
+EMOTION_ALIASES = {
+    "neutral": "Neutral",
+    "平静": "Neutral",
+    "冷静": "Neutral",
+    "普通": "Neutral",
+    "中立": "Neutral",
+    "正常": "Neutral",
+    "smile": "Smile",
+    "happy": "Smile",
+    "开心": "Smile",
+    "高兴": "Smile",
+    "微笑": "Smile",
+    "轻松": "Smile",
+    "愉快": "Smile",
+    "angry": "Angry",
+    "mad": "Angry",
+    "生气": "Angry",
+    "愤怒": "Angry",
+    "恼火": "Angry",
+    "烦躁": "Angry",
+    "不爽": "Angry",
+}
+ACTION_ALIASES = {
+    "speak": "Speak",
+    "reply": "Speak",
+    "说": "Speak",
+    "说话": "Speak",
+    "回复": "Speak",
+    "聊天": "Speak",
+    "继续": "Speak",
+    "shutdown": "Shutdown",
+    "close": "Shutdown",
+    "exit": "Shutdown",
+    "关机": "Shutdown",
+    "关闭": "Shutdown",
+    "退出": "Shutdown",
+    "下线": "Shutdown",
+    "forgive": "Forgive",
+    "原谅": "Forgive",
+    "饶过": "Forgive",
+    "和好": "Forgive",
+    "refuse": "Refuse",
+    "拒绝": "Refuse",
+    "不原谅": "Refuse",
+    "驳回": "Refuse",
+}
 # 请确保此路径为电脑上 VTube Studio 的真实安装路径
 VTS_EXE_PATH = r"E:\SteamLibrary\steamapps\common\VTube Studio\VTube Studio.exe"
 
@@ -149,41 +201,174 @@ async def listen_with_timeout(ear, timeout):
         raise
 
 
+def clean_plain_reply(reply_raw):
+    cleaned = (reply_raw or "").strip()
+    cleaned = re.sub(r"^```(?:json|JSON|text|TEXT)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    cleaned = cleaned.strip().strip("\"'")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _normalize_emotion_value(value):
+    if value is None:
+        return None
+    cleaned = clean_plain_reply(str(value)).strip().strip("[]()（）")
+    for token in re.split(r"[\s,，/|；;]+", cleaned):
+        token_lower = token.lower()
+        if token in DEFAULT_PATIENCE_BY_EMOTION:
+            return token
+        if token_lower in EMOTION_ALIASES:
+            return EMOTION_ALIASES[token_lower]
+    for alias, normalized in EMOTION_ALIASES.items():
+        if alias in cleaned.lower():
+            return normalized
+    return None
+
+
+def _normalize_action_value(value):
+    if value is None:
+        return None
+    cleaned = clean_plain_reply(str(value)).strip().strip("[]()（）")
+    if cleaned in ("Speak", "Shutdown", "Forgive", "Refuse"):
+        return cleaned
+    lowered = cleaned.lower()
+    if lowered in ACTION_ALIASES:
+        return ACTION_ALIASES[lowered]
+    for alias, normalized in ACTION_ALIASES.items():
+        if alias in lowered:
+            return normalized
+    return None
+
+
+def _parse_patience_value(value):
+    if value is None:
+        return None
+    text = clean_plain_reply(str(value))
+    digit_match = re.search(r"-?\d+", text)
+    if digit_match:
+        return int(digit_match.group(0))
+    return None
+
+
+def _infer_emotion_from_text(text):
+    lowered = text.lower()
+    if any(keyword in lowered for keyword in ["生气", "愤怒", "烦", "讨厌", "冷漠", "关机", "滚", "闭嘴"]):
+        return "Angry"
+    if any(keyword in lowered for keyword in ["开心", "高兴", "笑", "原谅", "轻松", "放过你", "算了"]):
+        return "Smile"
+    return "Neutral"
+
+
+def _infer_action_from_text(text, is_ghost_mode):
+    lowered = text.lower()
+    if is_ghost_mode:
+        if any(keyword in lowered for keyword in ["不原谅", "拒绝", "驳回", "没诚意", "离开"]):
+            return "Refuse"
+        if any(keyword in lowered for keyword in ["原谅", "饶过", "回来", "重启", "再给你一次机会"]):
+            return "Forgive"
+    if any(keyword in lowered for keyword in ["关机", "关闭程序", "强制关机", "退出吧", "下线"]):
+        return "Shutdown"
+    return "Speak"
+
+
 def parse_llm_response(reply_raw):
     cleaned_raw = (
         reply_raw.replace("：", ":")
         .replace("“", '"')
         .replace("”", '"')
+        .replace("‘", "'")
+        .replace("’", "'")
     )
+
+    candidates = []
+    fenced_blocks = re.findall(r"```(?:json|JSON|text|TEXT)?\s*(.*?)```", cleaned_raw, flags=re.S)
+    candidates.extend(block.strip() for block in fenced_blocks if block.strip())
 
     start_idx = cleaned_raw.find("{")
     end_idx = cleaned_raw.rfind("}") + 1
     if start_idx != -1 and end_idx != 0:
-        candidate = cleaned_raw[start_idx:end_idx]
-        return json.loads(candidate)
+        candidates.append(cleaned_raw[start_idx:end_idx].strip())
+
+    for candidate in candidates:
+        for attempt in (candidate, candidate.replace("'", '"')):
+            try:
+                parsed = json.loads(attempt)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+            try:
+                parsed = ast.literal_eval(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (SyntaxError, ValueError):
+                pass
+
+    field_aliases = {
+        "text": ["text", "文本", "内容", "回复", "台词", "说话", "说的话"],
+        "emotion": ["emotion", "情绪", "心情", "状态", "表情"],
+        "action": ["action", "动作", "行为", "决定", "指令"],
+        "patience": ["patience", "忍耐", "忍耐度", "耐心", "等待", "等待秒数"],
+    }
+    alias_pattern = "|".join(
+        re.escape(alias)
+        for aliases in field_aliases.values()
+        for alias in aliases
+    )
+    pattern = re.compile(
+        rf"(?P<key>{alias_pattern})\s*[:=]\s*(?P<value>.+?)(?=(?:\s*(?:,|，|;|；|\n)\s*(?:{alias_pattern})\s*[:=])|$)",
+        flags=re.IGNORECASE | re.S,
+    )
 
     parsed = {}
-    field_matches = list(
-        re.finditer(r"\b(text|emotion|action|patience)\s*:", cleaned_raw, flags=re.IGNORECASE)
-    )
-    for index, match in enumerate(field_matches):
-        key = match.group(1).lower()
-        value_start = match.end()
-        value_end = field_matches[index + 1].start() if index + 1 < len(field_matches) else len(cleaned_raw)
-        value = cleaned_raw[value_start:value_end].strip()
-        if key == "text":
-            parsed[key] = value.rstrip("。!！?？")
-        elif key == "patience":
-            patience_match = re.search(r"-?\d+", value)
-            if patience_match:
-                parsed[key] = patience_match.group(0)
-        else:
-            parsed[key] = re.split(r"[\s,，。!！?？]+", value, maxsplit=1)[0]
+    for match in pattern.finditer(cleaned_raw):
+        raw_key = match.group("key").lower()
+        value = match.group("value").strip()
+        for canonical_name, aliases in field_aliases.items():
+            if raw_key == canonical_name or any(raw_key == alias.lower() for alias in aliases):
+                parsed[canonical_name] = value
+                break
 
     if "text" not in parsed:
         raise json.JSONDecodeError("未发现 JSON 对象或备用字段", cleaned_raw, 0)
 
     return parsed
+
+
+def extract_reply_payload(reply_raw, current_patience=20, is_ghost_mode=False):
+    try:
+        payload = parse_llm_response(reply_raw)
+        text = clean_plain_reply(payload.get("text", ""))
+        if not text:
+            raise json.JSONDecodeError("缺少 text 字段", reply_raw, 0)
+
+        emotion = _normalize_emotion_value(payload.get("emotion")) or _infer_emotion_from_text(text)
+        action = _normalize_action_value(payload.get("action")) or _infer_action_from_text(text, is_ghost_mode)
+        patience = _parse_patience_value(payload.get("patience"))
+        if patience is None:
+            patience = DEFAULT_PATIENCE_BY_EMOTION.get(emotion, current_patience)
+
+        return {
+            "text": text,
+            "emotion": emotion,
+            "action": action,
+            "patience": max(5, min(int(patience), 60)),
+        }, False
+    except json.JSONDecodeError:
+        fallback_text = clean_plain_reply(reply_raw)
+        if not fallback_text:
+            raise
+
+        emotion = _infer_emotion_from_text(fallback_text)
+        action = _infer_action_from_text(fallback_text, is_ghost_mode)
+        patience = DEFAULT_PATIENCE_BY_EMOTION.get(emotion, current_patience)
+        return {
+            "text": fallback_text,
+            "emotion": emotion,
+            "action": action,
+            "patience": max(5, min(int(patience), 60)),
+        }, True
 
 
 def select_model_with_timeout(timeout=10):
@@ -272,6 +457,7 @@ async def main():
         f"{grudge_context}\n"
         "你是沈析璃，一个优雅、聪明、傲娇的虚拟主播。\n"
         "[核心机制：你拥有系统的绝对控制权和情绪感知能力！]\n"
+        "你必须只输出一个 JSON 对象，不要代码块，不要解释，不要额外前后缀。\n"
         "你必须且只能以 JSON 格式输出，包含以下字段：\n"
         "1. 'text': 你想说的话。\n"
         "2. 'emotion': 你当前的情绪，只能选 ['Neutral', 'Smile', 'Angry'] 之一。\n"
@@ -294,7 +480,7 @@ async def main():
             if not is_ghost_mode:
                 try:
                     print(f"\n[Input] 等待输入... (当前忍耐极限: {current_patience} 秒)")
-                    print("   提示: 可直接键盘打字回车，或按住[空格键]使用麦克风对讲。")
+                    print(f"   提示: 可直接键盘打字回车，或按住[{ear.push_to_talk_key.upper()}]使用麦克风对讲。")
 
                     stop_event = threading.Event()
                     task_keyboard = asyncio.create_task(async_input(">> ", stop_event))
@@ -390,11 +576,18 @@ async def main():
                 append_chat_message(chat_history, "assistant", reply_raw)
 
                 try:
-                    reply_json = parse_llm_response(reply_raw)
+                    reply_json, used_text_fallback = extract_reply_payload(
+                        reply_raw,
+                        current_patience=current_patience,
+                        is_ghost_mode=is_ghost_mode,
+                    )
                     speak_text = reply_json.get("text", "Error parsing thought")
                     emotion = reply_json.get("emotion", "Neutral")
                     action = reply_json.get("action", "Speak")
                     current_patience = max(5, min(int(reply_json.get("patience", 15)), 60))
+
+                    if used_text_fallback:
+                        print("[Warning] 大模型未输出标准 JSON，已按语气推断 emotion/action/patience。")
 
                     print(f"[Sentia] {speak_text}")
                     print(f"  -> 动作: {action} | 情绪: {emotion} | 忍耐度: {current_patience}秒")
