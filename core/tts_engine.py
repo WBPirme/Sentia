@@ -57,7 +57,7 @@ class SentiaVoice:
         np.clip(normalized, -1.0, 1.0, out=normalized)
         return normalized
 
-    def generate_audio_data(self, text, speed=1.1):
+    def generate_audio_data(self, text, speed=0.85):
         if not self.tts or not text or text.strip() == "":
             return None, None
 

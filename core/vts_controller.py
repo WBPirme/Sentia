@@ -102,7 +102,7 @@ class VTSController:
 
     # 口型
     async def animate_speech_lip_sync(self, audio_samples, sample_rate, emotion="Neutral"):
-        if not self.is_alive:
+        if not self.is_alive or audio_samples is None or len(audio_samples) == 0:
             return
 
         fps = 60
@@ -110,25 +110,31 @@ class VTSController:
         total_chunks = len(audio_samples) // chunk_size
 
         start_time = time.perf_counter()
-        circle_speed = 15.0
 
         for i in range(total_chunks):
-            t = (i + 1) / fps
-            theta = t * circle_speed
+            # 1. 提取当前音频块
+            start_idx = i * chunk_size
+            end_idx = start_idx + chunk_size
+            chunk = audio_samples[start_idx:end_idx]
 
-            target_open = (math.sin(theta) * 0.5 + 0.5) * 0.8
+            # 2. 真实计算论文中提到的均方根 (RMS) 能量
+            rms = math.sqrt(sum(x * x for x in chunk) / len(chunk)) if len(chunk) > 0 else 0.0
 
-            target_form = math.cos(theta) * 0.9
+            # 3. 将 RMS 归一化放大为口型张合度 (可根据实际音量微调 3.0 这个系数)
+            target_open = min(1.0, rms * 3.0)
+            target_form = 0.5 + (target_open * 0.5)  # 口型形状跟随张力变化
 
-            # 无需阻尼，直接暴力赋值！我们要的就是这种机械、鬼畜的几何感！
+            # 4. 赋值给 VTS 物理参数
             self.cur_mouth_open = target_open
             self.cur_mouth_form = target_form
 
-            expected_time = t
+            # 同步等待下一帧
+            expected_time = (i + 1) / fps
             elapsed = time.perf_counter() - start_time
             if expected_time > elapsed:
                 await asyncio.sleep(expected_time - elapsed)
 
+        # 结束后复位口型
         self.cur_mouth_open = 0.0
         self.cur_mouth_form = 0.8
 
@@ -150,7 +156,6 @@ class VTSController:
 
                 #注意力
                 if current_time - self.last_focus_time > random.uniform(1.5, 4.5):
-                    # 高斯分布中心严格为 0，绝对对称
                     fx = random.gauss(0.0, 0.5)
                     fy = random.gauss(0.0, 0.5)
 

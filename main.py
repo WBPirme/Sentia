@@ -535,9 +535,9 @@ async def main():
                     if unanswered_attempts == 1:
                         hidden_context = "[系统级感知：并未回应 (第1次)。请根据人设，主动抛出一个轻松的新话题尝试引起他注意。并重设 patience 值。]"
                     elif unanswered_attempts == 2:
-                        hidden_context = "[系统级感知：再次无视了你 (第2次)。你的耐心正在消失，请开始用傲娇的语气抱怨冷落。并大幅降低 patience 值。]"
+                        hidden_context = "[系统级感知：再次无视了你 (第2次)。你的耐心正在消失，开始抱怨冷落。并大幅降低 patience 值。]"
                     else:
-                        hidden_context = f"[系统级感知：连续 {unanswered_attempts} 次彻底无视了你。你现在极度愤怒。请大发雷霆，或直接下达 'Shutdown' 指令关闭程序！]"
+                        hidden_context = f"[系统级感知：连续 {unanswered_attempts} 次彻底无视了你。你现在极度愤怒，大发雷霆，或直接下达 'Shutdown' 指令关闭程序！]"
 
                     append_chat_message(chat_history, "user", hidden_context)
                 except Exception as input_err:
@@ -566,14 +566,18 @@ async def main():
                     client.chat.completions.create,
                     model="Sentia",
                     messages=chat_history,
-                    temperature=1.2,
-                    max_tokens=3000,
+                    temperature=1.0,
+                    max_tokens=6000,
                     response_format={"type": "json_object"}
                 )
                 t_llm_end = time.perf_counter()
 
                 reply_raw = response.choices[0].message.content
                 append_chat_message(chat_history, "assistant", reply_raw)
+
+                print("\n" + "-" * 40)
+                print(f"[原生输出] \n{response.model_dump_json(indent=2)}")
+                print("-" * 40 + "\n")
 
                 try:
                     reply_json, used_text_fallback = extract_reply_payload(
@@ -611,15 +615,16 @@ async def main():
 
                     if action == "Shutdown" and not is_ghost_mode:
                         print("\n[Alert] 接收到 Shutdown 关机指令，正在关闭 VTube Studio 进程...")
-                        memory.write_memory("极度冷漠，我极其愤怒，直接强行关机。", emotion_tag="Angry", importance=5)
+                        memory.write_memory("极度冷漠，我非常生气，选择离开。", emotion_tag="Angry", importance=5)
                         os.system('taskkill /F /IM "VTube Studio.exe" >nul 2>&1')
                         await body.close()
                         is_ghost_mode = True
 
                     elif action == "Forgive" and is_ghost_mode:
                         print("\n[Recover] 接收到 Forgive 原谅指令，正在重新拉起 VTube Studio...")
-                        memory.write_memory("向我诚恳地道了歉，我原谅了他，并重新启动。", emotion_tag="Smile", importance=4)
-                        subprocess.Popen(VTS_EXE_PATH, shell=True)
+                        memory.write_memory("向我诚恳地道了歉，我选择原谅，并重新启动。", emotion_tag="Smile", importance=4)
+                        DETACHED_PROCESS = 0x00000008
+                        subprocess.Popen([VTS_EXE_PATH], creationflags=DETACHED_PROCESS)
                         print("[System] 等待 VTS 启动 ...")
                         await asyncio.sleep(15)
                         body = VTSController()
@@ -629,7 +634,7 @@ async def main():
 
                     elif action == "Refuse" and is_ghost_mode:
                         print("\n[Fatal] 大模型判定道歉无效。拒绝原谅，终止程序。")
-                        memory.write_memory("道歉毫无诚意，我彻底拒绝并永远地离开了。", emotion_tag="Angry", importance=5)
+                        memory.write_memory("道歉毫无诚意，我彻底拒绝并选择离开。", emotion_tag="Angry", importance=5)
                         break
 
                 except json.JSONDecodeError:

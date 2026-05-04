@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import shlex
 from datetime import datetime
 from uuid import uuid4
 
@@ -12,7 +13,6 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 import chromadb
 from chromadb.utils import embedding_functions
-
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "models", "memory_db")
@@ -37,9 +37,24 @@ def build_collection():
     return client, collection
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Inspect and edit Sentia memory.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+class InteractiveParser(argparse.ArgumentParser):
+    """自定义 Parser，防止遇到错误或 -h 时直接退出进程"""
+
+    def error(self, message):
+        print(f"\n参数错误: {message}")
+        self.print_help()
+        raise ValueError("ArgumentParser Error")
+
+    def exit(self, status=0, message=None):
+        if message:
+            print(message)
+        # 抛出异常中断当前流程，回到循环起点
+        raise ValueError("ArgumentParser Exit")
+
+
+def get_parser():
+    parser = InteractiveParser(description="Inspect and edit Sentia memory.", prog="")
+    subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("collections", help="Show available memory collections.")
 
@@ -60,7 +75,8 @@ def parse_args():
 
     prune_parser = subparsers.add_parser("prune", help="Delete memories that match a keyword filter.")
     prune_parser.add_argument("--contains", required=True, help="Delete memories whose document contains this text.")
-    prune_parser.add_argument("--limit", type=int, default=0, help="Maximum number of matched memories to delete. 0 means no limit.")
+    prune_parser.add_argument("--limit", type=int, default=0,
+                              help="Maximum number of matched memories to delete. 0 means no limit.")
     prune_parser.add_argument("--dry-run", action="store_true", help="Preview matches without deleting anything.")
 
     add_parser = subparsers.add_parser("add", help="Add a memory record.")
@@ -78,16 +94,7 @@ def parse_args():
     delete_parser = subparsers.add_parser("delete", help="Delete memory records by id.")
     delete_parser.add_argument("ids", nargs="+")
 
-    if len(sys.argv) == 1:
-        parser.print_help()
-        print("\nExamples:")
-        print("  .\\.venv\\Scripts\\python.exe .\\tools\\memory_admin.py list --limit 10")
-        print("  .\\.venv\\Scripts\\python.exe .\\tools\\memory_admin.py search \"你好\" --limit 5")
-        print("  .\\.venv\\Scripts\\python.exe .\\tools\\memory_admin.py dump --output E:\\Sentia\\models\\memory_db\\memory_dump.json")
-        print("  .\\.venv\\Scripts\\python.exe .\\tools\\memory_admin.py prune --contains 关机 --dry-run")
-        sys.exit(0)
-
-    return parser.parse_args()
+    return parser
 
 
 def print_memory_row(memory_id, document, metadata):
@@ -271,41 +278,95 @@ def command_delete(collection, ids):
         print(memory_id)
 
 
-def main():
-    args = parse_args()
-    client, collection = build_collection()
+def print_help_header():
+    print("\n" + "=" * 50)
+    print(" 欢迎使用 Sentia 记忆控制台 (交互模式) ")
+    print(" 输入具体命令执行操作，或输入 'help' 查看支持的命令")
+    print(" 输入 'exit' 或 'quit' 退出")
+    print("=" * 50 + "\n")
+    print(" 示例用法:")
+    print("   list --limit 10")
+    print("   search \"你好\" --limit 5")
+    print("   add \"今天天气不错\" --emotion \"开心\" --importance 2")
+    print("-" * 50)
 
-    if args.command == "collections":
-        command_collections(client)
-    elif args.command == "list":
-        command_list(collection, args.limit, args.contains)
-    elif args.command == "search":
-        command_search(collection, args.query, args.limit)
-    elif args.command == "dump":
-        command_dump(collection, args.output)
-    elif args.command == "restore":
-        command_restore(collection, args.input, args.replace)
-    elif args.command == "prune":
-        command_prune(collection, args.contains, args.limit, args.dry_run)
-    elif args.command == "add":
-        command_add(collection, args.text, args.emotion, args.importance)
-    elif args.command == "update":
-        command_update(
-            collection,
-            args.id,
-            args.text,
-            args.emotion,
-            args.importance,
-            args.timestamp,
-        )
-    elif args.command == "delete":
-        command_delete(collection, args.ids)
-    else:
-        raise ValueError(f"Unsupported command: {args.command}")
+
+def main():
+    print("正在初始化 ChromaDB 连接，请稍候...")
+    client, collection = build_collection()
+    parser = get_parser()
+
+    print_help_header()
+
+    while True:
+        try:
+            # 捕获用户输入
+            user_input = input("\nSentiaMemory> ").strip()
+
+            if not user_input:
+                continue
+
+            if user_input.lower() in ["exit", "quit"]:
+                print("退出控制台。")
+                break
+
+            if user_input.lower() in ["help", "?", "-h", "--help"]:
+                parser.print_help()
+                continue
+
+            # 使用 shlex.split 能够正确解析带引号的参数（例如 search "你好 世界"）
+            try:
+                args_list = shlex.split(user_input)
+            except ValueError as e:
+                print(f"解析输入时出错 (可能是引号未闭合): {e}")
+                continue
+
+            try:
+                args = parser.parse_args(args_list)
+            except ValueError:
+                # 由 InteractiveParser 抛出的异常，跳过本次循环
+                continue
+
+            if not args.command:
+                parser.print_help()
+                continue
+
+            # 路由执行命令
+            if args.command == "collections":
+                command_collections(client)
+            elif args.command == "list":
+                command_list(collection, args.limit, args.contains)
+            elif args.command == "search":
+                command_search(collection, args.query, args.limit)
+            elif args.command == "dump":
+                command_dump(collection, args.output)
+            elif args.command == "restore":
+                command_restore(collection, args.input, args.replace)
+            elif args.command == "prune":
+                command_prune(collection, args.contains, args.limit, args.dry_run)
+            elif args.command == "add":
+                command_add(collection, args.text, args.emotion, args.importance)
+            elif args.command == "update":
+                command_update(
+                    collection,
+                    args.id,
+                    args.text,
+                    args.emotion,
+                    args.importance,
+                    args.timestamp,
+                )
+            elif args.command == "delete":
+                command_delete(collection, args.ids)
+            else:
+                print(f"不支持的命令: {args.command}")
+
+        except KeyboardInterrupt:
+            # 捕获 Ctrl+C，避免直接崩溃退出
+            print("\n请输入 'exit' 退出程序。")
+        except Exception as e:
+            # 捕获其他执行期错误，防止控制台崩溃
+            print(f"执行时发生错误: {e}")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        sys.exit(130)
+    main()
